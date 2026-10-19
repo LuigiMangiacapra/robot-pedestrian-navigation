@@ -1,5 +1,4 @@
 import numpy as np
-import matplotlib.pyplot as plt
 from collections import defaultdict
 # import rclpy
 
@@ -36,52 +35,50 @@ actions = [
     "turn_right"
 ]
 
-
-# ============================================================
-# USER INPUT
-# ============================================================
-
-print("Grid:", rows, "rows x", columns, "columns")
-print("Le coordinate partono da 0.")
-print("Esempio: riga 4, colonna 2 -> (4, 2)")
+communication_actions = [
+    "none",
+    "acoustic",
+    "visual",
+    "projection"
+]
 
 
-# Task choice
-task = int(input("Inserisci il task: 1 (copertura), 2 (passing-side): "))
+def configure_training():
+    global task
+    global start_row, start_column
+    global start_ped_row, start_ped_column
 
-# Starting position
-start_row = int(input("Inserisci la riga della posizione iniziale: "))
-start_column = int(input("Inserisci la colonna della posizione iniziale: "))
+    print("Grid:", rows, "rows x", columns, "columns")
+    print("Le coordinate partono da 0.")
 
-# Illegal position
-start_ped_row = int(input("Inserisci la riga della posizione illegale: "))
-start_ped_column = int(input("Inserisci la colonna della posizione illegale: "))
+    task = int(input("Inserisci il task: 1 (copertura), 2 (passing-side): "))
 
+    start_row = int(input("Inserisci la riga della posizione iniziale: "))
+    start_column = int(input("Inserisci la colonna della posizione iniziale: "))
 
-# ============================================================
-# INPUT VALIDATION
-# ============================================================
+    start_ped_row = int(input("Inserisci la riga della posizione illegale: "))
+    start_ped_column = int(input("Inserisci la colonna della posizione illegale: "))
 
-if task not in (1, 2):
-    raise ValueError("Il task deve essere 1 o 2")
+    if task not in (1, 2):
+        raise ValueError("Il task deve essere 1 o 2")
 
-if not (
-    0 <= start_row < rows and 0 <= start_column < columns
-):
-    raise ValueError("La posizione iniziale non e' valida.")
+    if not (
+        0 <= start_row < rows
+        and 0 <= start_column < columns
+    ):
+        raise ValueError("La posizione iniziale non è valida.")
 
-if not (
-    0 <= start_ped_row < rows and 0 <= start_ped_column < columns
-):
-    raise ValueError("La posizione illegale non e' valida.")
+    if not (
+        0 <= start_ped_row < rows
+        and 0 <= start_ped_column < columns
+    ):
+        raise ValueError("La posizione illegale non è valida.")
 
-if (
-    start_row == start_ped_row and start_column == start_ped_column
-):
-    raise ValueError(
-        "La posizione iniziale non puo' coincidere "
-        "con la posizione illegale."
-    )
+    if (start_row, start_column) == (start_ped_row, start_ped_column):
+        raise ValueError(
+            "La posizione iniziale non può coincidere "
+            "con quella del pedone."
+        )
 
 
 # ============================================================
@@ -89,39 +86,14 @@ if (
 # ============================================================
 
 # Q-values for each state-action pair
-q_values = defaultdict(lambda: np.zeros(len(actions)))
+n_q_actions = len(actions) * len(communication_actions)
+
+q_values = defaultdict(
+    lambda: np.zeros(n_q_actions)
+)
 
 # Values used to identify safe/unsafe actions
 safe_actions = np.zeros((rows, columns, 4))
-
-
-# Matrix used to keep track of coverage
-#
-# 0 = not visited
-# 1 = visited
-
-# coverage_matrix = np.zeros((rows, columns))
-
-
-# ============================================================
-# VISUALIZATION
-# ============================================================
-
-fig, ax1 = plt.subplots(figsize=(6, 6))
-
-ax1.set_title("Agent path in the last episode")
-ax1.set_ylabel("Rows")
-ax1.set_xlabel("Columns")
-
-
-# ============================================================
-# GRAPH DATA
-# ============================================================
-
-x = []
-y = []
-
-debug_file = open("debug_qlearning.txt", "w", buffering=1)
 
 
 def is_passing_completed(
@@ -213,29 +185,25 @@ def go_forward(row_index, column_index, orientation, ped_row, ped_column):
     new_row = row_index
     new_column = column_index
 
-    # Calcola la posizione successiva
     if orientation == "UP":
         new_row -= 1
-
     elif orientation == "RIGHT":
         new_column += 1
-
     elif orientation == "DOWN":
         new_row += 1
-
     elif orientation == "LEFT":
         new_column -= 1
 
-    # Controlla i limiti della griglia
+    # Controllo dei limiti della griglia
     if not (0 <= new_row < rows and 0 <= new_column < columns):
-        return row_index, column_index, False
+        return row_index, column_index, False, False
 
-    # Controlla la presenza del pedone
+    # Rilevamento della collisione
     if (new_row, new_column) == (ped_row, ped_column):
-        return row_index, column_index, False
+        return row_index, column_index, False, True
 
     # Movimento consentito
-    return new_row, new_column, True
+    return new_row, new_column, True, False
 
 
 # ============================================================
@@ -284,18 +252,53 @@ def turn_right(
     return new_orientation, True
 
 
+def get_communication_reward(
+    communication,
+    robot_visibility,
+    ped_visibility,
+    distance
+):
+    if communication == "none":
+        return 0.0
+
+    if (
+        communication == "acoustic"
+        and robot_visibility
+        and not ped_visibility
+    ):
+        return 0.5
+
+    elif (
+        communication == "visual"
+        and robot_visibility
+        and ped_visibility
+        and distance <= 2
+    ):
+        return 0.5
+
+    elif (
+        communication == "projection"
+        and not robot_visibility
+        and not ped_visibility
+        and distance > 2
+    ):
+        return 0.5
+
+    return -0.5
+
+
 # ============================================================
 # REWARD FUNCTION
 # ============================================================
-def get_reward(
+def get_task_reward(
     old_robot_row,
     old_robot_column,
     new_robot_row,
     new_robot_column,
     distance,
     action,
-    previous_robot_observation,
-    robot_observation,
+    previous_robot_visibility,
+    robot_visibility,
     robot_orientation,
     ped_row,
     ped_column,
@@ -313,6 +316,10 @@ def get_reward(
         3: "turn_left",
         4: "turn_right"
     }
+
+    # ========================================================
+    # REWARD GENERICI
+    # ========================================================
 
     # Collisione con il pedone
     if (
@@ -367,8 +374,8 @@ def get_reward(
         executed_action = passing_action_names[action]
 
         reward, done = reward_passing_side(
-            previous_robot_observation,
-            robot_observation,
+            previous_robot_visibility,
+            robot_visibility,
             distance,
             turn_left_result,
             turn_right_result,
@@ -379,8 +386,8 @@ def get_reward(
         print(
             f"[PASSING DEBUG] "
             f"azione={executed_action}, "
-            f"osservazione_precedente={previous_robot_observation}, "
-            f"osservazione_attuale={robot_observation}, "
+            f"osservazione_precedente={previous_robot_visibility}, "
+            f"osservazione_attuale={robot_visibility}, "
             f"rotazione_sinistra={turn_left_result}, "
             f"rotazione_destra={turn_right_result}, "
             f'avanzamento={go_forward_result}, '
@@ -449,21 +456,23 @@ def can_move_forward(row, column, orientation):
 
 
 def get_legal_actions(
-    row,
-    column,
-    orientation,
-    distance,
-    ped_row,
-    ped_column,
     robot_row,
     robot_column,
-    robot_orientation
+    robot_orientation,
+    ped_row,
+    ped_column
 ):
     legal_actions = []
 
     for action_index in range(len(actions)):
 
-        new_row, new_column, new_orientation, moved = get_next_state(
+        (
+            new_row,
+            new_column,
+            new_orientation,
+            moved,
+            collision
+        ) = get_next_state(
             robot_row,
             robot_column,
             robot_orientation,
@@ -472,19 +481,13 @@ def get_legal_actions(
             action_index
         )
 
-        # ------------------------------------------------
-        # 1. Evita movimenti che non avanzano
-        # ------------------------------------------------
-        # forward, left_forward e right_forward devono
-        # riuscire ad avanzare nella nuova cella.
-        if action_index in (0, 1, 2) and not moved:
+        # Le azioni di avanzamento devono muovere il robot,
+        # a meno che non si tratti di una collisione.
+        if action_index in (0, 1, 2) and not moved and not collision:
             continue
 
-        # ------------------------------------------------
-        # 2. Evita rotazioni verso l'esterno della griglia
-        # ------------------------------------------------
-        # Dopo una rotazione sul posto, il robot deve poter
-        # avanzare almeno di una cella nella nuova direzione.
+        # Le rotazioni sul posto restano ammesse solo se
+        # nella nuova direzione è possibile avanzare.
         if action_index in (3, 4):
             if not can_move_forward(
                 robot_row,
@@ -493,24 +496,26 @@ def get_legal_actions(
             ):
                 continue
 
-        # ------------------------------------------------
-        # 3. Controlla i limiti della griglia
-        # ------------------------------------------------
+        # Verifica i limiti della griglia.
         if not (
             0 <= new_row < rows
             and 0 <= new_column < columns
         ):
             continue
 
-        # ------------------------------------------------
-        # 4. Evita collisioni con il pedone
-        # ------------------------------------------------
-        if (new_row, new_column) == (ped_row, ped_column):
+        # Non escludere le azioni che causano collisione:
+        # il robot deve poterle selezionare e imparare
+        # dalla penalità.
+        if (
+            (new_row, new_column) == (ped_row, ped_column)
+            and not collision
+        ):
             continue
 
         legal_actions.append(action_index)
 
     return legal_actions
+
 
 # ============================================================
 # ACTION SELECTION
@@ -519,83 +524,57 @@ def get_legal_actions(
 def get_action(
     state,
     epsilon,
-    curr_row_index,
-    curr_column_index,
-    orientation,
-    distance,
-    ped_row,
-    ped_column,
     robot_row,
     robot_column,
-    robot_orientation
-):
-    possible_actions = get_legal_actions(
-        curr_row_index,
-        curr_column_index,
-        orientation,
-        distance,
-        ped_row,
-        ped_column,
-        robot_row,
-        robot_column,
-        robot_orientation
-    )
-
-    # Nessuna azione legale disponibile
-    if not possible_actions:
-        return None
-
-    # Esplorazione: scegli soltanto azioni legali
-    if np.random.random() < epsilon:
-        return int(np.random.choice(possible_actions))
-
-    # Sfruttamento: Q massimo tra le sole azioni legali
-    state_key = tuple(state)
-
-    q_values_available = np.array([
-        q_values[state_key][action_index]
-        for action_index in possible_actions
-    ])
-
-    best_index = np.argmax(q_values_available)
-
-    return possible_actions[best_index]
-
-
-# ============================================================
-# GET RELATIVE DIRECTION
-# ============================================================
-
-def get_relative_direction(
-    row_index,
-    column_index,
-    orientation,
-    action_index,
+    robot_orientation,
     ped_row,
     ped_column
 ):
-    if action_index == 0:
-        return orientation, True
+    legal_movements = get_legal_actions(
+        robot_row,
+        robot_column,
+        robot_orientation,
+        ped_row,
+        ped_column
+    )
 
-    elif action_index == 1:
-        return turn_right(
-            row_index,
-            column_index,
-            orientation,
-            ped_row,
-            ped_column
-        )
+    if not legal_movements:
+        return None
 
-    elif action_index == 2:
-        return turn_left(
-            row_index,
-            column_index,
-            orientation,
-            ped_row,
-            ped_column
-        )
+    # Combina ogni movimento legale con ogni modalità
+    # di comunicazione.
+    possible_actions = [
+        encode_action(movement, communication)
+        for movement in legal_movements
+        for communication in range(len(communication_actions))
+    ]
 
-    return orientation, False
+    state_key = tuple(state)
+
+    # Esplorazione
+    if np.random.random() < epsilon:
+        return int(np.random.choice(possible_actions))
+
+    # Sfruttamento
+    legal_q_values = q_values[state_key][possible_actions]
+
+    best_index = int(np.argmax(legal_q_values))
+
+    return int(possible_actions[best_index])
+
+
+def encode_action(movement_index, communication_index):
+    return (
+        movement_index * len(communication_actions)
+        + communication_index
+    )
+
+
+def decode_action(action_index):
+    movement_index = action_index // len(communication_actions)
+    communication_index = action_index % len(communication_actions)
+
+    return movement_index, communication_index
 
 
 # ============================================================
@@ -614,10 +593,15 @@ def get_next_state(
     new_robot_column = robot_column
     new_orientation = robot_orientation
     moved = False
+    collision = False
 
     if action == 0:  # forward
-
-        new_robot_row, new_robot_column, moved = go_forward(
+        (
+            new_robot_row,
+            new_robot_column,
+            moved,
+            collision
+        ) = go_forward(
             robot_row,
             robot_column,
             robot_orientation,
@@ -626,7 +610,6 @@ def get_next_state(
         )
 
     elif action == 1:  # left_forward
-
         new_orientation, _ = turn_left(
             robot_row,
             robot_column,
@@ -635,7 +618,12 @@ def get_next_state(
             ped_column
         )
 
-        new_robot_row, new_robot_column, moved = go_forward(
+        (
+            new_robot_row,
+            new_robot_column,
+            moved,
+            collision
+        ) = go_forward(
             robot_row,
             robot_column,
             new_orientation,
@@ -644,7 +632,6 @@ def get_next_state(
         )
 
     elif action == 2:  # right_forward
-
         new_orientation, _ = turn_right(
             robot_row,
             robot_column,
@@ -653,7 +640,12 @@ def get_next_state(
             ped_column
         )
 
-        new_robot_row, new_robot_column, moved = go_forward(
+        (
+            new_robot_row,
+            new_robot_column,
+            moved,
+            collision
+        ) = go_forward(
             robot_row,
             robot_column,
             new_orientation,
@@ -662,7 +654,6 @@ def get_next_state(
         )
 
     elif action == 3:  # turn_left
-
         new_orientation, _ = turn_left(
             robot_row,
             robot_column,
@@ -672,7 +663,6 @@ def get_next_state(
         )
 
     elif action == 4:  # turn_right
-
         new_orientation, _ = turn_right(
             robot_row,
             robot_column,
@@ -685,7 +675,8 @@ def get_next_state(
         new_robot_row,
         new_robot_column,
         new_orientation,
-        moved
+        moved,
+        collision
     )
 
 
@@ -766,179 +757,6 @@ def update_pedestrian_position(
     )
 
     return new_row, new_column, new_orientation
-
-
-# ============================================================
-# CURRENT DRAW STATE
-# ============================================================
-
-def current_draw_state(
-    robot_row,
-    robot_column,
-    ped_row,
-    ped_column,
-    obstacle_path,
-    path,
-    episode,
-    steps,
-    coverage_matrix,
-    robot_orientation,
-    ped_orientation,
-    robot_visibility,
-    ped_visibility
-):
-    ax1.clear()
-
-    # ========================================================
-    # GRIGLIA
-    # ========================================================
-
-    ax1.set_xlim(-0.5, columns - 0.5)
-    ax1.set_ylim(rows - 0.5, -0.5)
-
-    ax1.set_xticks(range(columns))
-    ax1.set_yticks(range(rows))
-
-    ax1.grid(True)
-
-    # ========================================================
-    # COVERAGE ROBOT + PEDONE
-    # ========================================================
-
-    if task == 1 and coverage_matrix is not None:
-
-        # Celle visitate dal robot
-        robot_rows, robot_columns = np.where(coverage_matrix == 1)
-
-        ax1.scatter(
-            robot_columns,
-            robot_rows,
-            color="cyan",
-            s=200
-        )
-
-        # Celle visitate dal pedone
-        ped_rows, ped_columns = np.where(coverage_matrix == -1)
-
-        ax1.scatter(
-            ped_columns,
-            ped_rows,
-            color="orange",
-            s=200
-        )
-
-    # # ========================================================
-    # # PERCORSO DEL ROBOT
-    # # ========================================================
-
-    # if len(path) > 1:
-
-    #     path_rows, path_columns = zip(*path)
-
-    #     ax1.plot(
-    #         path_columns,
-    #         path_rows,
-    #         color="blue",
-    #         linewidth=2,
-    #         marker="o",
-    #         markersize=4
-    #     )
-
-    # # ========================================================
-    # # PERCORSO DEL PEDONE
-    # # ========================================================
-
-    # if len(obstacle_path) > 1:
-
-    #     obstacle_path_rows, obstacle_path_columns = zip(
-    #         *obstacle_path
-    #     )
-
-    #     ax1.plot(
-    #         obstacle_path_columns,
-    #         obstacle_path_rows,
-    #         color="black",
-    #         linewidth=2
-    #     )
-
-    # ========================================================
-    # COLORI IN BASE ALLA VISIBILITÀ
-    # ========================================================
-
-    if robot_visibility and ped_visibility:
-
-        # Robot e pedone si vedono reciprocamente
-        robot_color = "green"
-        ped_color = "green"
-
-    elif robot_visibility:
-
-        # Solo il robot rileva il pedone
-        robot_color = "red"
-        ped_color = "purple"
-
-    else:
-
-        # Il robot non rileva il pedone
-        robot_color = "blue"
-        ped_color = "purple"
-
-    # ========================================================
-    # PEDONE
-    # ========================================================
-
-    ped_markers = {
-        "UP": "^",
-        "DOWN": "v",
-        "LEFT": "<",
-        "RIGHT": ">"
-    }
-
-    if ped_orientation in ped_markers:
-
-        ax1.scatter(
-            ped_column,
-            ped_row,
-            color=ped_color,
-            marker=ped_markers[ped_orientation],
-            s=300,
-            edgecolors="black"
-        )
-
-    # ========================================================
-    # ROBOT
-    # ========================================================
-
-    robot_markers = {
-        "UP": "^",
-        "DOWN": "v",
-        "LEFT": "<",
-        "RIGHT": ">"
-    }
-
-    if robot_orientation in robot_markers:
-
-        ax1.scatter(
-            robot_column,
-            robot_row,
-            color=robot_color,
-            marker=robot_markers[robot_orientation],
-            s=300,
-            edgecolors="black"
-        )
-
-    # ========================================================
-    # TITOLO E ASSI
-    # ========================================================
-
-    ax1.set_title(
-        f"Episode {episode + 1} - Step {steps}"
-    )
-
-    ax1.set_xlabel("Columns")
-    ax1.set_ylabel("Rows")
-
-    plt.pause(0.01)
 
 
 def calculate_distance(
@@ -1031,6 +849,16 @@ def visibility(
     return robot_visibility, ped_visibility
 
 
+def use_shield(old_row_index, old_column_index, old_orientation):
+    return (
+        old_row_index,
+        old_column_index,
+        old_orientation,
+        -10,
+        False
+    )
+
+
 # ============================================================
 # TRAINING PARAMETERS
 # ============================================================
@@ -1038,7 +866,7 @@ def visibility(
 discount_factor = 0.9
 learning_rate = 0.9
 
-episodes = 500
+episodes = 2000
 
 # ============================================================
 # TRAINING VARIABLES
@@ -1075,6 +903,7 @@ episode_q_max = []
 
 
 def train():
+    debug_file = open("debug_qlearning.txt", "w", buffering=1)
 
     for episode in range(episodes):
 
@@ -1114,12 +943,6 @@ def train():
             # Registra la cella iniziale del robot
             update_coverage_matrix(robot_row, robot_column)
 
-        # Final paths
-        if episode == episodes - 1:
-            path = [(robot_row, robot_column)]
-
-            obstacle_path = [(ped_row, ped_column)]
-
         # --------------------------------------------------------
         # EPISODE
         # --------------------------------------------------------
@@ -1133,12 +956,6 @@ def train():
             #     break
 
             done = False
-
-            # Registra la posizione aggiornata del pedone.
-            if episode == episodes - 1:
-                obstacle_path.append(
-                    (ped_row, ped_column)
-                )
 
             # ==========================================
             # 1. STATO CORRENTE
@@ -1160,11 +977,16 @@ def train():
                 ped_column
             )
 
-            previous_robot_observation = robot_visibility
+            observed_ped_orientation = (
+                ped_orientation if robot_visibility else None
+            )
+
+            previous_robot_visibility = robot_visibility
 
             state = (
                 distance,
                 robot_orientation,
+                observed_ped_orientation,
                 robot_visibility,
                 ped_visibility
             )
@@ -1181,13 +1003,27 @@ def train():
                 robot_row,
                 robot_column,
                 robot_orientation,
-                distance,
                 ped_row,
-                ped_column,
-                robot_row,
-                robot_column,
-                robot_orientation
+                ped_column
             )
+
+            if action_index is None:
+                break
+
+            # Mantieni l'indice originale dell'azione combinata (0-19)
+            combined_action_index = action_index
+
+            # Separa movimento e comunicazione
+            movement_index, communication_index = decode_action(
+                combined_action_index
+            )
+
+            # Ottieni i nomi delle azioni
+            movement_action = actions[movement_index]
+
+            communication_action = communication_actions[
+                communication_index
+            ]
 
             # if len(obstacle_path) > 1:
             #     obstacle_path_rows, obstacle_path_columns = zip(*obstacle_path)
@@ -1209,83 +1045,89 @@ def train():
             # Salvo posizione precedente
             old_row_index = robot_row
             old_column_index = robot_column
+            old_orientation = robot_orientation
 
-            # ==========================================
-            # 3. ESEGUO AZIONE
-            # ==========================================
-
-            new_next_row, new_next_column, robot_orientation, moved = get_next_state(
-                robot_row,
-                robot_column,
-                robot_orientation,
-                ped_row,
-                ped_column,
-                action_index
-            )
-
-            new_robot_visibility, new_ped_visibility = visibility(
-                robot_orientation,
-                ped_orientation,
+            # Esegui l'azione
+            (
                 new_next_row,
                 new_next_column,
-                ped_row,
-                ped_column
-            )
-
-            # Dopo aver aggiornato la posizione e l'orientamento del robot
-            distance = calculate_distance(
+                new_orientation,
+                moved,
+                collision
+            ) = get_next_state(
                 robot_row,
                 robot_column,
+                robot_orientation,
                 ped_row,
                 ped_column,
-                robot_orientation
+                movement_index
             )
 
-            # ==========================================
-            # 4. REWARD
-            # ==========================================
-
-            # 3. Controllo i limiti della griglia
-            if not (
-                0 <= new_next_row < rows and 0 <= new_next_column < columns
-            ):
-                new_next_row = old_row_index
-                new_next_column = old_column_index
-                reward = -0.5
+            if collision:
+                (
+                    new_next_row,
+                    new_next_column,
+                    new_orientation,
+                    reward,
+                    done
+                ) = use_shield(
+                    old_row_index,
+                    old_column_index,
+                    old_orientation
+                )
 
             else:
-                reward, done = get_reward(
+
+                # Calcola visibilità e distanza dopo il movimento
+                new_robot_visibility, new_ped_visibility = visibility(
+                    new_orientation,
+                    ped_orientation,
+                    new_next_row,
+                    new_next_column,
+                    ped_row,
+                    ped_column
+                )
+
+                new_distance = calculate_distance(
+                    new_next_row,
+                    new_next_column,
+                    ped_row,
+                    ped_column,
+                    new_orientation
+                )
+
+                reward_task, done = get_task_reward(
                     old_row_index,
                     old_column_index,
                     new_next_row,
                     new_next_column,
                     distance,
-                    action_index,
-                    previous_robot_observation,
+                    movement_index,
+                    previous_robot_visibility,
                     new_robot_visibility,
-                    robot_orientation,
+                    new_orientation,
                     ped_row,
                     ped_column,
                     new_ped_visibility,
                     moved
                 )
 
-            print(
-                f"[TRAIN] step={steps}, "
-                f"action={actions[action_index]}, "
-                f"reward={reward}, "
-                f"done={done}"
-            )
-            accumulated_reward += reward
+                reward_comm = get_communication_reward(
+                    communication_action,
+                    new_robot_visibility,
+                    new_ped_visibility,
+                    new_distance
+                )
 
+                reward = reward_task + reward_comm
+
+            # Aggiorna lo stato effettivo del robot
             robot_row = new_next_row
             robot_column = new_next_column
+            robot_orientation = new_orientation
 
             row_index = robot_row
             column_index = robot_column
-
-            if episode == episodes - 1:
-                path.append((row_index, column_index))
 
             # ==========================================
             # 6. AGGIORNO COVERAGE
@@ -1294,34 +1136,6 @@ def train():
                 update_coverage_matrix(
                     row_index,
                     column_index
-                )
-
-            # VISUALIZZA IL ROBOT DOPO LA SUA AZIONE
-            if episode == episodes - 1:
-
-                robot_visibility, ped_visibility = visibility(
-                    robot_orientation,
-                    ped_orientation,
-                    robot_row,
-                    robot_column,
-                    ped_row,
-                    ped_column
-                )
-
-                current_draw_state(
-                    robot_row=robot_row,
-                    robot_column=robot_column,
-                    ped_row=ped_row,
-                    ped_column=ped_column,
-                    obstacle_path=obstacle_path,
-                    path=path,
-                    episode=episode,
-                    steps=steps,
-                    coverage_matrix=coverage_matrix if task == 1 else None,
-                    robot_orientation=robot_orientation,
-                    ped_orientation=ped_orientation,
-                    robot_visibility=robot_visibility,
-                    ped_visibility=ped_visibility
                 )
 
             # ==========================================
@@ -1371,21 +1185,6 @@ def train():
                 ped_column
             )
 
-            # terminal_state = is_terminal_state(
-            #     ped_row,
-            #     ped_column,
-            #     robot_visibility,
-            #     distance,
-            #     robot_orientation,
-            #     old_column_index,
-            #     new_next_column,
-            #     old_row_index,
-            #     new_next_row,
-            #     ped_visibility
-            # )
-
-            # done = done or terminal_state
-
             # ==========================================
             # 8. NUOVO STATO
             # ==========================================
@@ -1400,16 +1199,21 @@ def train():
             )
 
             next_distance = calculate_distance(
-                row_index,
-                column_index,
+                robot_row,
+                robot_column,
                 ped_row,
                 ped_column,
                 robot_orientation
             )
 
+            next_observed_ped_orientation = (
+                ped_orientation if next_robot_visibility else None
+            )
+
             next_state = (
                 next_distance,
                 robot_orientation,
+                next_observed_ped_orientation,
                 next_robot_visibility,
                 next_ped_visibility
             )
@@ -1422,62 +1226,33 @@ def train():
                 next_q = 0.0
 
             else:
-                next_legal_actions = get_legal_actions(
+                next_legal_movements = get_legal_actions(
                     robot_row,
                     robot_column,
                     robot_orientation,
-                    next_distance,
-                    ped_row,
-                    ped_column,
-                    robot_row,
-                    robot_column,
-                    robot_orientation
-                )
-
-                if next_legal_actions:
-                    next_q = np.max(
-                        q_values[tuple(next_state)][next_legal_actions]
-                    )
-                else:
-                    next_q = 0.0
-
-            q_values[tuple(state)][action_index] += learning_rate * (
-                reward + discount_factor * next_q - q_values[tuple(state)][action_index]
-            )
-
-            # ==========================================
-            # VISUALIZZAZIONE E MOVIMENTO REALE (ULTIMO EPISODIO)
-            # ==========================================
-            if episode == episodes - 1:
-
-                robot_visibility, ped_visibility = visibility(
-                    robot_orientation,
-                    ped_orientation,
-                    robot_row,
-                    robot_column,
                     ped_row,
                     ped_column
                 )
 
-                # 1. Aggiorna la figura Matplotlib con lo stato corrente
-                current_draw_state(
-                    robot_row=robot_row,
-                    robot_column=robot_column,
-                    ped_row=ped_row,
-                    ped_column=ped_column,
-                    obstacle_path=obstacle_path,
-                    path=path,
-                    episode=episode,
-                    steps=steps,
-                    coverage_matrix=coverage_matrix if task == 1 else None,
-                    robot_orientation=robot_orientation,
-                    ped_orientation=ped_orientation,
-                    robot_visibility=robot_visibility,
-                    ped_visibility=ped_visibility
-                )
+                next_legal_actions = [
+                    encode_action(movement, communication)
+                    for movement in next_legal_movements
+                    for communication in range(len(communication_actions))
+                ]
 
-            x.append(episode + 1)
-            y.append(accumulated_reward)
+                if not next_legal_actions:
+                    next_q = 0.0
+                else:
+                    next_q = np.max(
+                        q_values[tuple(next_state)][next_legal_actions]
+                    )
+
+            # Aggiornamento SEMPRE eseguito, anche se done=True
+            q_values[tuple(state)][combined_action_index] += learning_rate * (
+                reward
+                + discount_factor * next_q
+                - q_values[tuple(state)][combined_action_index]
+            )
 
             # ==========================================
             # 10. TERMINA EPISODIO
@@ -1548,12 +1323,33 @@ def train():
 
     print("Training complete!")
 
-    debug_file.close()
+    # Salvataggio della Q-table e dei metadati
+    import os
+    import pickle
 
-    plt.ioff()
-    plt.show()
+    checkpoint = {
+        "q_values": dict(q_values),
+        "rows": rows,
+        "columns": columns,
+        "actions": actions,
+        "communication_actions": communication_actions,
+        "task": task
+    }
+
+    # Salva il file nella stessa cartella di RL_tiago.py
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    checkpoint_path = os.path.join(base_dir, "q_table.pkl")
+
+    with open(checkpoint_path, "wb") as file:
+        pickle.dump(checkpoint, file)
+
+    print(f"Q-table salvata in: {checkpoint_path}")
+    print(f"Numero di stati salvati: {len(q_values)}")
+
+    debug_file.close()
 
 
 if __name__ == "__main__":
     print("Avvio del training...", flush=True)
+    configure_training()
     train()
