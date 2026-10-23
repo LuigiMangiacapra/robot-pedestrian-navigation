@@ -1,11 +1,11 @@
 import numpy as np
+import time
 from collections import defaultdict
 # import rclpy
 
 from coverage import (
     coverage_matrix,
     update_coverage_matrix,
-    get_coverage_mask,
     is_coverage_completed
 )
 

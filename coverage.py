@@ -7,20 +7,21 @@ columns = 4
 coverage_matrix = np.zeros((rows, columns))
 
 
-def update_coverage_matrix(row, column):
+def update_coverage_matrix(row, column, value):
 
-    print("\n--- UPDATE COVERAGE ---")
-    print("Posizione agente:", (row, column))
-    print("Valore precedente:", coverage_matrix[row, column])
+    # print("\n--- UPDATE COVERAGE ---")
+    # print("Posizione agente:", (row, column))
+    # print("Valore precedente:", coverage_matrix[row, column])
 
     if coverage_matrix[row, column] == 0:
-        coverage_matrix[row, column] = 1
-        print(">>> CELLA NUOVA: impostata a 1")
-    else:
-        print(">>> CELLA GIA' VISITATA")
+        coverage_matrix[row, column] = value
+        # print(">>> CELLA NUOVA: impostata a 1")
+    # else:
+    #     print(">>> CELLA GIA' VISITATA")
 
-    print("Coverage matrix:")
-    print(coverage_matrix)
+    # print("Coverage matrix:")
+    # print(coverage_matrix)
+    return coverage_matrix
 
 
 def get_coverage_mask():
