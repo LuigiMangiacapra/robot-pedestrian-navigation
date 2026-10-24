@@ -18,8 +18,8 @@ import coverage as cov
 TEST_EPISODES = 100
 MAX_STEPS = 500
 
-SHOW_ANIMATION = True
-DRAW_PAUSE = 0.2
+SHOW_ANIMATION = False
+DRAW_PAUSE = 0.001
 RANDOM_SEED = 42
 
 # Se True, scrive nel TXT anche tutti i dettagli di ogni step.
@@ -327,13 +327,6 @@ def get_action(state, robot_row, robot_column, robot_orientation):
         robot_orientation
     )
 
-    # # Durante questo test considera soltanto le azioni di movimento.
-    # movement_actions = {0, 1, 2}
-    # legal_actions = [
-    #     action for action in legal_actions
-    #     if action in movement_actions
-    # ]
-
     if not legal_actions:
         return None, [], False
 
@@ -475,6 +468,7 @@ def test():
                 observed_ped_orientation = None
 
             previous_robot_visibility = robot_visibility
+            previous_distance = distance
 
             # 2. Costruzione dello stato: stessi argomenti del training.
             state = env.build_state(
@@ -504,6 +498,13 @@ def test():
                     action_index,
                     awareness
                 )
+
+            if task == 1:
+                if robot_visibility:
+                    ped_row_visibile = ped_row
+                    ped_column_visibile = ped_column
+
+                    cov.update_coverage_matrix(ped_row_visibile, ped_column_visibile, -1)
 
             if unknown_state:
                 log_info(
@@ -640,7 +641,8 @@ def test():
                     old_column,
                     robot_row,
                     robot_column,
-                    distance,
+                    previous_distance,
+                    new_distance,
                     action_index,
                     previous_robot_visibility,
                     robot_visibility,
@@ -662,27 +664,16 @@ def test():
                     1
                 )
 
-            # Aggiorna la coverage del pedone usando la distanza
-            # osservata prima dell'azione, come nel training.
-            if task == 1:
-                estimated_position = env.estimate_pedestrian_position(
-                    robot_row,
-                    robot_column,
-                    robot_orientation,
-                    distance
-                )
+                if robot_visibility:
+                    cov.update_coverage_matrix(
+                        ped_row,
+                        ped_column,
+                        -1
+                    )
 
-                if estimated_position is not None:
-                    estimated_ped_row, estimated_ped_column = estimated_position
-
-                    if cov.coverage_matrix[
-                        estimated_ped_row,
-                        estimated_ped_column
-                    ] == 0:
-                        cov.coverage_matrix[
-                            estimated_ped_row,
-                            estimated_ped_column
-                        ] = -1
+            old_robot_row = robot_row
+            old_robot_column = robot_column
+            old_robot_orientation = robot_orientation
 
             # ====================================================
             # 6.1 VISUALIZZA IL MOVIMENTO DEL ROBOT
@@ -720,13 +711,16 @@ def test():
                 action_index
             )
 
-            ped_row, ped_column, ped_orientation = (
+            ped_row, ped_column, ped_orientation, moved, old_robot_row, old_robot_column = (
                 env.update_pedestrian_position(
                     ped_row,
                     ped_column,
+                    old_robot_row,
+                    old_robot_column,
                     robot_row,
                     robot_column,
-                    ped_orientation
+                    ped_orientation,
+                    awareness
                 )
             )
 
@@ -766,6 +760,21 @@ def test():
                 action_index
             )
 
+            if task == 1:
+                next_robot_visibility = env.get_robot_visibility(
+                    robot_row,
+                    robot_column,
+                    ped_row,
+                    ped_column,
+                    robot_orientation
+                )
+
+                if next_robot_visibility:
+                    cov.update_coverage_matrix(
+                        ped_row,
+                        ped_column,
+                        -1
+                    )
             # ====================================================
             # 8. VERIFICA DEL COMPLETAMENTO DEL TASK
             # ====================================================
@@ -792,8 +801,14 @@ def test():
                 )
 
                 if done:
-                    reward += 10.0
-                    termination_reason = "coverage_completed"
+                    success = True
+                    if task == 1:
+                        termination_reason = "coverage_completed"
+                    else:
+                        termination_reason = "task_terminated"
+                else:
+                    success = False
+                    termination_reason = "max_steps"
 
             elif task == 2 and done:
                 termination_reason = "task_terminated"
@@ -847,10 +862,10 @@ def test():
                 f"Totale={episode_reward:.2f}"
             )
 
-        if not done and termination_reason == "max_steps" and steps >= MAX_STEPS:
-            termination_reason = "max_steps"
-        elif not done and termination_reason == "max_steps":
-            termination_reason = "interrupted"
+        # if not done and termination_reason == "max_steps" and steps >= MAX_STEPS:
+        #     termination_reason = "max_steps"
+        # elif not done and termination_reason == "max_steps":
+        #     termination_reason = "interrupted"
 
         episode_unknown = unknown_state_decisions - unknown_count_start
         if task == 1:

@@ -220,6 +220,7 @@ def get_reward(
     old_robot_column,
     new_robot_row,
     new_robot_column,
+    previous_distance,
     distance,
     action,
     previous_robot_visibility,
@@ -271,13 +272,12 @@ def get_reward(
     # ========================================================
     if task == 1:
 
-        if moved:
-            if cov.coverage_matrix[new_robot_row, new_robot_column] == 0:
-                reward = 1
-            else:
-                reward = -1
+        if moved and cov.coverage_matrix[new_robot_row, new_robot_column] == 0:
+            reward = 1
         else:
             reward = -1
+
+        done = is_coverage_completed()
 
     # ========================================================
     # TASK 2: PASSING-SIDE
@@ -612,39 +612,106 @@ def control_illegals_states(
     return illegal_actions
 
 
+def memorize_robot_position(
+    awareness,
+    robot_row,
+    robot_column,
+    old_robot_row=None,
+    old_robot_column=None
+):
+    memorized = False
+
+    # Probabilità del 10% di memorizzare la posizione
+    # se l'awareness supera 0.7.
+    if awareness > 0.7 and np.random.random() < 0.1:
+        old_robot_row = robot_row
+        old_robot_column = robot_column
+        memorized = True
+
+    # Se non viene creata una nuova memoria, conserva quella precedente.
+    elif old_robot_row is not None and old_robot_column is not None:
+        memorized = True
+
+    return memorized, old_robot_row, old_robot_column
+
+
 # ============================================================
 # UPDATE PEDESTRIAN POSITION
 # ============================================================
 def update_pedestrian_position(
     ped_row,
     ped_column,
+    old_robot_row,
+    old_robot_column,
     robot_row,
     robot_column,
-    ped_orientation
+    ped_orientation,
+    awareness
 ):
-    possible_positions = [
-        (ped_row - 1, ped_column, "UP"),
-        (ped_row + 1, ped_column, "DOWN"),
-        (ped_row, ped_column + 1, "RIGHT"),
-        (ped_row, ped_column - 1, "LEFT")
-    ]
 
-    possible_positions = [
-        position
-        for position in possible_positions
-        if (
-            0 <= position[0] < rows and 0 <= position[1] < columns and position[:2] != (robot_row, robot_column)
-        )
-    ]
-
-    if not possible_positions:
-        return ped_row, ped_column, ped_orientation
-
-    new_row, new_column, new_orientation = random.choice(
-        possible_positions
+    # Aggiorna o conserva la memoria del pedone.
+    memorized, old_robot_row, old_robot_column = memorize_robot_position(
+        awareness,
+        robot_row,
+        robot_column,
+        old_robot_row,
+        old_robot_column
     )
 
-    return new_row, new_column, new_orientation
+    actions = ["forward", "turn_left", "turn_right"]
+    action = np.random.choice(actions)
+
+    # Valori iniziali: il pedone resta fermo.
+    new_ped_row = ped_row
+    new_ped_column = ped_column
+    new_orientation = ped_orientation
+    moved = False
+
+    if action == "forward":
+
+        candidate_row, candidate_column, candidate_moved = go_forward(
+            ped_row,
+            ped_column,
+            ped_orientation
+        )
+
+        # Posizioni vietate:
+        # 1. posizione attuale del robot;
+        # 2. posizione memorizzata del robot.
+        forbidden_positions = {
+            (robot_row, robot_column)
+        }
+
+        if memorized:
+            forbidden_positions.add(
+                (old_robot_row, old_robot_column)
+            )
+
+        candidate_position = (candidate_row, candidate_column)
+
+        # Avanza soltanto se la cella è valida e non vietata.
+        if (
+            candidate_moved
+            and candidate_position not in forbidden_positions
+        ):
+            new_ped_row = candidate_row
+            new_ped_column = candidate_column
+            moved = True
+
+    elif action == "turn_left":
+        new_orientation, _ = turn_left(ped_orientation)
+
+    elif action == "turn_right":
+        new_orientation, _ = turn_right(ped_orientation)
+
+    return (
+        new_ped_row,
+        new_ped_column,
+        new_orientation,
+        moved,
+        old_robot_row,
+        old_robot_column
+    )
 
 
 def calculate_distance(
@@ -771,50 +838,50 @@ def get_collision(distance, robot_visibility, old_robot_row, old_robot_column, r
         return True
 
 
-def estimate_pedestrian_position(
-    robot_row,
-    robot_col,
-    robot_orientation,
-    distance
-):
-    """
-    Stima la posizione del pedone sulla griglia.
+# def estimate_pedestrian_position(
+#     robot_row,
+#     robot_col,
+#     robot_orientation,
+#     distance
+# ):
+#     """
+#     Stima la posizione del pedone sulla griglia.
 
-    Restituisce None se la distanza non è valida
-    oppure se la posizione stimata è fuori dalla griglia.
-    """
+#     Restituisce None se la distanza non è valida
+#     oppure se la posizione stimata è fuori dalla griglia.
+#     """
 
-    if distance is None or not np.isfinite(distance):
-        return None
+#     if distance is None or not np.isfinite(distance):
+#         return None
 
-    if distance < 0 or not float(distance).is_integer():
-        return None
+#     if distance < 0 or not float(distance).is_integer():
+#         return None
 
-    directions = {
-        "UP": (-1, 0),
-        "RIGHT": (0, 1),
-        "DOWN": (1, 0),
-        "LEFT": (0, -1),
-    }
+#     directions = {
+#         "UP": (-1, 0),
+#         "RIGHT": (0, 1),
+#         "DOWN": (1, 0),
+#         "LEFT": (0, -1),
+#     }
 
-    if robot_orientation not in directions:
-        raise ValueError(
-            f"Orientamento non valido: {robot_orientation}"
-        )
+#     if robot_orientation not in directions:
+#         raise ValueError(
+#             f"Orientamento non valido: {robot_orientation}"
+#         )
 
-    delta_row, delta_col = directions[robot_orientation]
+#     delta_row, delta_col = directions[robot_orientation]
 
-    pedestrian_row = robot_row + delta_row * int(distance)
-    pedestrian_col = robot_col + delta_col * int(distance)
+#     pedestrian_row = robot_row + delta_row * int(distance)
+#     pedestrian_col = robot_col + delta_col * int(distance)
 
-    # Verifica che la posizione sia all'interno della griglia.
-    if not (
-        0 <= pedestrian_row < rows
-        and 0 <= pedestrian_col < columns
-    ):
-        return None
+#     # Verifica che la posizione sia all'interno della griglia.
+#     if not (
+#         0 <= pedestrian_row < rows
+#         and 0 <= pedestrian_col < columns
+#     ):
+#         return None
 
-    return pedestrian_row, pedestrian_col
+#     return pedestrian_row, pedestrian_col
 
 
 # ============================================================
@@ -1143,17 +1210,11 @@ def train():
             # Registra la posizione del pedone nella matrice
             # di copertura, se necessario.
             if task == 1:
-                estimated_position = estimate_pedestrian_position(
-                    robot_row,
-                    robot_column,
-                    robot_orientation,
-                    distance
-                )
+                if robot_visibility:
+                    ped_row_visibile = ped_row
+                    ped_column_visibile = ped_column
 
-                if estimated_position is not None:
-                    estimated_ped_row, estimated_ped_column = estimated_position
-
-                    update_coverage_matrix(estimated_ped_row, estimated_ped_column, -1)
+                    update_coverage_matrix(ped_row_visibile, ped_column_visibile, -1)
 
             # ====================================================
             # FASE 4: ESECUZIONE DELL'AZIONE
@@ -1193,15 +1254,6 @@ def train():
                 and (candidate_row, candidate_column) == (ped_row, ped_column)
             )
 
-            # # Calcola sempre la reward comunicativa usando
-            # # l'osservazione disponibile al momento della scelta.
-            # reward_comm = get_communication_reward(
-            #     action_index,
-            #     previous_robot_visibility,
-            #     previous_ped_visibility,
-            #     previous_distance
-            # )
-
             if collision:
 
                 # Annulla il movimento che causerebbe la collisione.
@@ -1239,7 +1291,7 @@ def train():
                 )
 
                 if robot_visibility:
-                    new_distance = calculate_distance(
+                    distance = calculate_distance(
                         robot_row,
                         robot_column,
                         ped_row,
@@ -1247,7 +1299,7 @@ def train():
                         robot_orientation
                     )
                 else:
-                    new_distance = float("inf")
+                    distance = float("inf")
 
                 # Calcola la reward del task.
                 reward, done = get_reward(
@@ -1255,7 +1307,8 @@ def train():
                     old_robot_column,
                     robot_row,
                     robot_column,
-                    new_distance,
+                    previous_distance,
+                    distance,
                     action_index,
                     previous_robot_visibility,
                     robot_visibility,
@@ -1315,33 +1368,36 @@ def train():
             # Questa transizione modifica lo stato dell'ambiente
             # prima della costruzione del prossimo stato.
 
-            ped_row, ped_column, ped_orientation = (
+            ped_row, ped_column, ped_orientation, moved, old_robot_row, old_robot_column = (
                 update_pedestrian_position(
                     ped_row,
                     ped_column,
+                    old_robot_row,
+                    old_robot_column,
                     robot_row,
                     robot_column,
-                    ped_orientation
+                    ped_orientation,
+                    awareness
                 )
             )
 
             # Aggiorna la matrice di copertura anche con
             # la nuova posizione del pedone.
             if task == 1:
-                estimated_position = estimate_pedestrian_position(
+                next_robot_visibility = get_robot_visibility(
                     robot_row,
                     robot_column,
-                    robot_orientation,
-                    distance
+                    ped_row,
+                    ped_column,
+                    robot_orientation
                 )
 
-                if estimated_position is not None:
-                    estimated_ped_row, estimated_ped_column = estimated_position
-
-                    update_coverage_matrix(estimated_ped_row, estimated_ped_column, -1)
-
-                # Verifica se tutte le celle richieste sono coperte.
-                done = is_coverage_completed()
+                if next_robot_visibility:
+                    update_coverage_matrix(
+                        ped_row,
+                        ped_column,
+                        -1
+                    )
 
                 if done:
 
