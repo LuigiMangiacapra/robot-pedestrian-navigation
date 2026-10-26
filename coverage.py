@@ -42,3 +42,10 @@ def get_coverage_mask():
 
 def is_coverage_completed():
     return np.all(coverage_matrix != 0)
+
+
+def percentage_coverage():
+    visited_cells = np.count_nonzero(coverage_matrix != 0)
+    total_cells = rows * columns
+
+    return visited_cells / total_cells

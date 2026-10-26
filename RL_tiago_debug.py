@@ -11,7 +11,8 @@ import coverage as cov
 
 from coverage import (
     update_coverage_matrix,
-    is_coverage_completed
+    is_coverage_completed,
+    percentage_coverage
 )
 import random
 
@@ -191,6 +192,7 @@ def get_reward(
     previous_distance,
     distance,
     action,
+    previous_action,
     previous_robot_visibility,
     robot_visibility,
     robot_orientation,
@@ -212,42 +214,44 @@ def get_reward(
     go_forward_result = moved if action == 0 else False
 
     # Robot fermo
-    # if (old_robot_row == new_robot_row and old_robot_column == new_robot_column):
-    #     reward = -1
+    if (old_robot_row == new_robot_row and old_robot_column == new_robot_column):
+        reward = -1
 
     # Escludi gli orientamenti rivolti verso l'esterno.
-    facing_outward = (
-        (new_robot_row == 0 and robot_orientation == "UP")
-        or
-        (new_robot_row == rows - 1 and robot_orientation == "DOWN")
-        or
-        (new_robot_column == 0 and robot_orientation == "LEFT")
-        or
-        (new_robot_column == columns - 1 and robot_orientation == "RIGHT")
-    )
+    # facing_outward = (
+    #     (new_robot_row == 0 and robot_orientation == "UP")
+    #     or
+    #     (new_robot_row == rows - 1 and robot_orientation == "DOWN")
+    #     or
+    #     (new_robot_column == 0 and robot_orientation == "LEFT")
+    #     or
+    #     (new_robot_column == columns - 1 and robot_orientation == "RIGHT")
+    # )
 
-    if facing_outward:
-        reward = -1
+    # if facing_outward:
+    #     reward = -1
 
     # ========================================================
     # TASK 1: COVERAGE - REWARD SHAPING
     # ========================================================
+
     if task == 1:
+        if action == 0:  # Avanzamento
+            destination_status = cov.coverage_matrix[
+                new_robot_row, new_robot_column
+            ]
 
-        if moved and cov.coverage_matrix[new_robot_row, new_robot_column] == 0:
-            reward = 1
+            if moved and destination_status == 0:
+                reward = 2.0
+            else:
+                reward = -1.0
 
-        elif action in (1, 2):
-            reward = -0.2
+        else:  # Rotazione o comunicazione
+            if previous_action is not None and previous_action != 0:
+                reward = -1.0
+            else:
+                reward = 0.0
 
-        elif action in (3, 4, 5):
-            reward = -0.2
-
-        else:
-            reward = -1
-
-        # Il completamento verrà verificato nel ciclo principale,
-        # dopo aver aggiornato la matrice di copertura.
         done = False
 
     # ========================================================
@@ -296,18 +300,18 @@ def get_awareness(
 
     communication = passing_action_names.get(action)
 
+    # Comunicazione acustica: sempre efficace.
+    if communication == "acoustic":
+        awareness = 1.0
+
     # Il pedone non guarda il robot:
     # l'awareness diminuisce indipendentemente dall'azione.
-    if not ped_visibility:
+    elif not ped_visibility:
         awareness = max(0.0, awareness - 0.1)
 
     # Il pedone guarda il robot, ma il robot non comunica.
     elif communication is None:
         awareness = max(0.0, awareness - 0.1)
-
-    # Comunicazione acustica: sempre efficace.
-    elif communication == "acoustic":
-        awareness = 1.0
 
     # Proiezione: efficace se il pedone vede il robot.
     elif communication == "projection":
@@ -493,46 +497,76 @@ def discretize_distance(distance):
         return "FAR"
 
 
-def discretiza_awareness(awareness):
+def discretize_awareness(awareness):
 
     awareness = round(float(awareness), 1)
 
     if awareness == 0.0:
         return "NOT AWARE"
-    elif distance == 1.0:
+    elif awareness == 1.0:
         return "AWARE"
     else:
         return "A LITTLE AWARE"
 
 
+def is_front_cell_visited(robot_row, robot_column, robot_orientation):
+    """
+    Restituisce True se la cella immediatamente davanti al robot
+    è già stata visitata, False altrimenti.
+
+    Una cella è considerata visitata se coverage_matrix contiene 1.
+    Le celle occupate dal pedone (-1) non sono considerate visitate
+    dal robot.
+    """
+
+    front_row, front_column, moved = go_forward(
+        robot_row,
+        robot_column,
+        robot_orientation
+    )
+
+    # Davanti al robot c'è il bordo della griglia.
+    if not moved:
+        return False
+
+    return cov.coverage_matrix[front_row, front_column] == 1
+
+
 def build_state(
     distance,
     robot_orientation,
-    observed_ped_orientation,
+    ped_orientation,
     robot_visibility,
     ped_visibility,
-    awareness
+    awareness,
+    front_cell_visited=False
 ):
-    distance_state = discretize_distance(distance)
-    # awareness_state = discretiza_awareness(awareness)
+    # distance_state = discretize_distance(distance)
+    # awareness_state = discretize_awareness(awareness)
+    distance = round(float(distance), 2)
     awareness = round(float(awareness), 1)
+    percentage = round(float(percentage_coverage()), 3)
 
     state = (
-        distance_state,
+        distance,
         robot_orientation,
-        observed_ped_orientation,
+        ped_orientation,
         bool(robot_visibility),
         bool(ped_visibility),
         awareness
     )
 
-    # if task == 1:
-    #     coverage_state = tuple(
-    #         cov.coverage_matrix.flatten().tolist()
-    #     )
-    #     state += (coverage_state,)
+    if task == 1:
+        state += (bool(front_cell_visited),)
+        # coverage_state = tuple(
+        #     cov.coverage_matrix.flatten().tolist()
+        # )
+        # state += (coverage_state,)
+        state += (bool(is_coverage_completed()),)
+        state += (percentage,)
 
     return state
+
 
 # ============================================================
 # SAFE ACTIONS
@@ -614,8 +648,7 @@ def update_pedestrian_position(
     ped_orientation,
     awareness
 ):
-
-    # Aggiorna o conserva la memoria del pedone.
+    # Aggiorna la memoria della posizione del robot.
     memorized, old_robot_row, old_robot_column = memorize_robot_position(
         awareness,
         robot_row,
@@ -624,53 +657,98 @@ def update_pedestrian_position(
         old_robot_column
     )
 
-    actions = ["forward", "turn_left", "turn_right"]
-    action = np.random.choice(actions)
+    # Posizioni vietate.
+    forbidden_positions = {(robot_row, robot_column)}
 
-    # Valori iniziali: il pedone resta fermo.
+    if memorized:
+        forbidden_positions.add((old_robot_row, old_robot_column))
+
+    # Azioni possibili.
+    actions = ("forward", "turn_left", "turn_right")
+
+    # Verifica se un orientamento è rivolto verso l'esterno.
+    def facing_outward(row, column, orientation):
+        return (
+            (row == 0 and orientation == "UP")
+            or (row == rows - 1 and orientation == "DOWN")
+            or (column == 0 and orientation == "LEFT")
+            or (column == columns - 1 and orientation == "RIGHT")
+        )
+
+    # Se il pedone è già rivolto verso l'esterno,
+    # cerca prima di correggere il suo orientamento.
+    if facing_outward(ped_row, ped_column, ped_orientation):
+        actions = ("turn_left", "turn_right")
+
+    valid_actions = []
+
+    for action in actions:
+        # Determina l'orientamento dopo l'azione.
+        if action == "forward":
+            candidate_orientation = ped_orientation
+        elif action == "turn_left":
+            candidate_orientation, _ = turn_left(ped_orientation)
+        else:
+            candidate_orientation, _ = turn_right(ped_orientation)
+
+        # Non accettare orientamenti rivolti verso l'esterno.
+        if facing_outward(ped_row, ped_column, candidate_orientation):
+            continue
+
+        # Calcola la cella davanti al pedone.
+        candidate_row, candidate_column, candidate_moved = go_forward(
+            ped_row,
+            ped_column,
+            candidate_orientation
+        )
+
+        candidate_position = (candidate_row, candidate_column)
+
+        # Accetta soltanto azioni che consentono di avanzare
+        # in una cella valida e non vietata.
+        if (
+            candidate_moved
+            and candidate_position not in forbidden_positions
+        ):
+            valid_actions.append(
+                (
+                    candidate_row,
+                    candidate_column,
+                    candidate_orientation
+                )
+            )
+
+    # Inizializza la posizione finale.
     new_ped_row = ped_row
     new_ped_column = ped_column
     new_orientation = ped_orientation
     moved = False
 
-    # Posizioni vietate.
-    forbidden_positions = {
-        (robot_row, robot_column)
-    }
+    # Sceglie casualmente una delle azioni valide.
+    if valid_actions:
+        selected = valid_actions[np.random.randint(len(valid_actions))]
 
-    if memorized:
-        forbidden_positions.add(
-            (old_robot_row, old_robot_column)
-        )
-
-    # Determina l'orientamento dopo l'eventuale svolta.
-    if action == "forward":
-        new_orientation = ped_orientation
-
-    elif action == "turn_left":
-        new_orientation, _ = turn_left(ped_orientation)
-
-    elif action == "turn_right":
-        new_orientation, _ = turn_right(ped_orientation)
-
-    # Dopo aver determinato l'orientamento,
-    # il pedone tenta di avanzare nella nuova direzione.
-    candidate_row, candidate_column, candidate_moved = go_forward(
-        ped_row,
-        ped_column,
-        new_orientation
-    )
-
-    candidate_position = (candidate_row, candidate_column)
-
-    # Avanza soltanto se la cella è valida e non vietata.
-    if (
-        candidate_moved
-        and candidate_position not in forbidden_positions
-    ):
-        new_ped_row = candidate_row
-        new_ped_column = candidate_column
+        new_ped_row, new_ped_column, new_orientation = selected
         moved = True
+
+    else:
+        # Se non è possibile avanzare, prova almeno a correggere
+        # l'orientamento senza spostare il pedone.
+        correction_actions = []
+
+        for action in ("turn_left", "turn_right"):
+            if action == "turn_left":
+                candidate_orientation, _ = turn_left(ped_orientation)
+            else:
+                candidate_orientation, _ = turn_right(ped_orientation)
+
+            if not facing_outward(ped_row, ped_column, candidate_orientation):
+                correction_actions.append(candidate_orientation)
+
+        if correction_actions:
+            new_orientation = correction_actions[
+                np.random.randint(len(correction_actions))
+            ]
 
     return (
         new_ped_row,
@@ -811,9 +889,9 @@ def get_collision(distance, robot_visibility, old_robot_row, old_robot_column, r
 # ============================================================
 
 discount_factor = 0.9
-learning_rate = 0.9
+learning_rate = 0.2
 
-episodes = 25000
+episodes = 5000
 
 # ============================================================
 # TRAINING VARIABLES
@@ -861,6 +939,7 @@ episode_ped_coverage = []
 episode_success = []
 episode_q_mean = []
 episode_q_max = []
+episode_td_errors = []
 
 
 class Tee:
@@ -913,7 +992,7 @@ def train():
     # le esperienze raccolte dall'agente nell'ambiente.
 
     for episode in range(episodes):
-
+        td_errors = []
         # --------------------------------------------------------
         # FASE 1.1: RESET DELL'EPISODIO
         # --------------------------------------------------------
@@ -938,6 +1017,8 @@ def train():
         # Reset delle metriche dell'episodio.
         accumulated_reward = 0
         steps = 0
+        # Memorizza l'azione eseguita al passo precedente.
+        previous_action = None
 
         # Ripristino delle posizioni iniziali.
         robot_row, robot_column = getStartingRobotLocation()
@@ -961,7 +1042,7 @@ def train():
         # - non viene raggiunto il limite massimo di passi;
         # - non sono disponibili azioni legali.
 
-        while True:
+        while steps < max_steps:
 
             steps += 1
 
@@ -990,16 +1071,16 @@ def train():
                 robot_orientation
             )
 
-            ped_visibility = get_pedestrian_visibility(
-                robot_row,
-                robot_column,
-                ped_row,
-                ped_column,
-                ped_orientation
-            )
-
             # Costruzione delle informazioni osservabili dal robot.
             if robot_visibility:
+
+                ped_visibility = get_pedestrian_visibility(
+                    robot_row,
+                    robot_column,
+                    ped_row,
+                    ped_column,
+                    ped_orientation
+                )
 
                 distance = calculate_distance(
                     robot_row,
@@ -1028,7 +1109,16 @@ def train():
             # - orientamento osservato del pedone;
             # - visibilità del pedone da parte del robot.
 
-            state = build_state(distance, robot_orientation, observed_ped_orientation, robot_visibility, ped_visibility, awareness)
+            front_cell_visited = False
+
+            if task == 1:
+                front_cell_visited = is_front_cell_visited(
+                    robot_row,
+                    robot_column,
+                    robot_orientation
+                )
+
+            state = build_state(distance, robot_orientation, observed_ped_orientation, robot_visibility, ped_visibility, awareness, front_cell_visited)
 
             # ====================================================
             # FASE 2.3: AGGIORNAMENTO DEL PARAMETRO EPSILON
@@ -1091,6 +1181,9 @@ def train():
                 robot_orientation
             )
 
+            if action_index is None:
+                break
+
             # ====================================================
             # FASE 3.1: RILEVAMENTO DELL'AWARENESS DEL PEDONE
             # ====================================================
@@ -1101,7 +1194,15 @@ def train():
             # - Se è un'azione di comunicazione l'awareness diventa 1;
             # - Altrimenti l'awareness diminuisce progressivamente.
 
-            awareness = get_awareness(ped_visibility, robot_visibility, action_index, awareness)
+            ped_visibility_aware = get_pedestrian_visibility(
+                robot_row,
+                robot_column,
+                ped_row,
+                ped_column,
+                ped_orientation
+            )
+
+            awareness = get_awareness(ped_visibility_aware, robot_visibility, action_index, awareness)
 
             if debug_step:
 
@@ -1109,10 +1210,6 @@ def train():
                     f"[DEBUG][AWARENESS] "
                     f"awareness={awareness} "
                 )
-
-            # Se non esistono azioni disponibili, termina l'episodio.
-            if action_index is None:
-                break
 
             movement_action = actions[action_index]
 
@@ -1204,15 +1301,15 @@ def train():
                     robot_orientation
                 )
 
-                ped_visibility = get_pedestrian_visibility(
-                    robot_row,
-                    robot_column,
-                    ped_row,
-                    ped_column,
-                    ped_orientation
-                )
-
                 if robot_visibility:
+
+                    ped_visibility = get_pedestrian_visibility(
+                        robot_row,
+                        robot_column,
+                        ped_row,
+                        ped_column,
+                        ped_orientation
+                    )
 
                     distance = calculate_distance(
                         robot_row,
@@ -1238,11 +1335,15 @@ def train():
                     previous_distance,
                     distance,
                     action_index,
+                    previous_action,
                     previous_robot_visibility,
                     robot_visibility,
                     robot_orientation,
                     moved
                 )
+
+            # Memorizza l'azione corrente per il passo successivo.
+            previous_action = action_index
 
             # Accumula la ricompensa per calcolare il risultato
             # complessivo dell'episodio.
@@ -1361,15 +1462,15 @@ def train():
                 robot_orientation
             )
 
-            next_ped_visibility = get_pedestrian_visibility(
-                robot_row,
-                robot_column,
-                ped_row,
-                ped_column,
-                ped_orientation
-            )
-
             if next_robot_visibility:
+
+                next_ped_visibility = get_pedestrian_visibility(
+                    robot_row,
+                    robot_column,
+                    ped_row,
+                    ped_column,
+                    ped_orientation
+                )
 
                 next_distance = calculate_distance(
                     robot_row,
@@ -1392,12 +1493,25 @@ def train():
             #
             # Se lo stato corrente contiene quattro elementi,
             # anche next_state deve contenerne quattro.
-            #
-            # ped_visibility non viene inserita qui, perché il
-            # robot non deve ricevere direttamente informazioni
-            # sul fatto che il pedone lo stia osservando.
 
-            next_state = build_state(next_distance, robot_orientation, next_observed_ped_orientation, next_robot_visibility, next_ped_visibility, awareness)
+            next_front_cell_visited = False
+
+            if task == 1:
+                next_front_cell_visited = is_front_cell_visited(
+                    robot_row,
+                    robot_column,
+                    robot_orientation
+                )
+
+            next_state = build_state(
+                next_distance,
+                robot_orientation,
+                next_observed_ped_orientation,
+                next_robot_visibility,
+                next_ped_visibility,
+                awareness,
+                next_front_cell_visited
+            )
 
             # ====================================================
             # FASE 8: AGGIORNAMENTO DELLA Q-TABLE
@@ -1464,6 +1578,8 @@ def train():
             new_q = old_q + learning_rate * td_error
 
             q_values[tuple(state)][action_index] = new_q
+
+            td_errors.append(abs(td_error))
 
             if debug_step:
 
@@ -1567,6 +1683,30 @@ def train():
         episode_success.append(done)
         episode_q_mean.append(mean_q)
         episode_q_max.append(max_q)
+
+        # Una sola media dell'errore TD per episodio
+        mean_td_error = np.mean(td_errors) if td_errors else 0.0
+        episode_td_errors.append(mean_td_error)
+
+    # ============================================================
+    # SALVATAGGIO DELLE METRICHE DI TRAINING
+    # ============================================================
+
+    metrics_path = os.path.join(base_dir, "training_metrics.npz")
+
+    np.savez(
+        metrics_path,
+        episode_rewards=np.array(episode_rewards),
+        episode_success=np.array(episode_success, dtype=bool),
+        episode_steps=np.array(episode_steps),
+        episode_td_errors=np.array(episode_td_errors),
+        episode_agent_coverage=np.array(episode_agent_coverage),
+        episode_ped_coverage=np.array(episode_ped_coverage),
+        episode_q_mean=np.array(episode_q_mean),
+        episode_q_max=np.array(episode_q_max)
+    )
+
+    print(f"Metriche salvate in: {metrics_path}")
 
     # ============================================================
     # FASE 11: CONCLUSIONE DEL TRAINING E SALVATAGGIO

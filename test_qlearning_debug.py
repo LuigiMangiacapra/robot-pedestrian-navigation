@@ -18,8 +18,8 @@ import coverage as cov
 TEST_EPISODES = 100
 MAX_STEPS = 500
 
-SHOW_ANIMATION = True
-DRAW_PAUSE = 1.0
+SHOW_ANIMATION = False
+DRAW_PAUSE = 0.5
 RANDOM_SEED = 42
 
 # Se True, scrive nel TXT anche tutti i dettagli di ogni step.
@@ -316,43 +316,36 @@ def current_draw_state(
 unknown_state_decisions = 0
 
 
-def get_action(state, robot_row, robot_column, robot_orientation):
+def get_action_test(
+    state,
+    robot_row,
+    robot_column,
+    robot_orientation
+):
     global unknown_state_decisions
 
-    # Ottieni le azioni legali secondo i vincoli dell'ambiente.
     legal_actions = env.get_legal_actions(
         robot_row,
         robot_column,
         robot_orientation
     )
 
-    communication_actions = [3, 4, 5]
-
-    legal_actions = sorted(
-        set(legal_actions + communication_actions)
-    )
-
     if not legal_actions:
-        return None, [], False
+        return None
 
     state_key = tuple(state)
-    state_q_values = q_values.get(state_key)
 
-    if state_q_values is None:
+    if state_key not in q_values:
         unknown_state_decisions += 1
-        return random.choice(legal_actions), legal_actions, True
+        log_info(f"STATO SCONOSCIUTO: {state_key!r}")
 
-    # Valuta soltanto le azioni di movimento legali.
-    legal_q_values = state_q_values[legal_actions]
-    max_q = np.max(legal_q_values)
+        # Fallback deterministico: prima azione legale.
+        return int(legal_actions[0])
 
-    # In caso di parità, scegli casualmente tra le migliori.
-    best_actions = [
-        action for action in legal_actions
-        if state_q_values[action] == max_q
-    ]
+    legal_q_values = q_values[state_key][legal_actions]
+    best_index = int(np.argmax(legal_q_values))
 
-    return random.choice(best_actions), legal_actions, False
+    return int(legal_actions[best_index])
 
 
 # ============================================================
@@ -423,11 +416,12 @@ def test():
 
         robot_row, robot_column = start_row, start_column
         ped_row, ped_column = start_ped_row, start_ped_column
-        old_robot_row = robot_row
-        old_robot_column = robot_column
         robot_orientation = "UP"
         ped_orientation = "DOWN"
         awareness = 0.0
+
+        # Nessuna azione precedente all'inizio dell'episodio.
+        previous_action = None
 
         episode_reward = 0.0
         communication_reward_total = 0.0
@@ -454,6 +448,9 @@ def test():
             )
             steps += 1
 
+            old_robot_row = robot_row
+            old_robot_column = robot_column
+
             # ====================================================
             # 1. OSSERVAZIONE DELLO STATO CORRENTE
             # ====================================================
@@ -466,15 +463,16 @@ def test():
                 robot_orientation
             )
 
-            ped_visibility = env.get_pedestrian_visibility(
-                robot_row,
-                robot_column,
-                ped_row,
-                ped_column,
-                ped_orientation
-            )
-
             if robot_visibility:
+
+                ped_visibility = env.get_pedestrian_visibility(
+                    robot_row,
+                    robot_column,
+                    ped_row,
+                    ped_column,
+                    ped_orientation
+                )
+
                 distance = env.calculate_distance(
                     robot_row,
                     robot_column,
@@ -491,26 +489,39 @@ def test():
             previous_ped_visibility = ped_visibility
             previous_distance = distance
 
-            # 2. Costruzione dello stato: stessi argomenti del training.
-            state = env.build_state(
-                distance,
-                robot_orientation,
-                observed_ped_orientation,
-                robot_visibility,
-                ped_visibility,
-                awareness
-            )
+            front_cell_visited = False
 
             # ====================================================
-            # 2. SELEZIONE DELL'AZIONE GREEDY
+            # 2. COSTRUZIONE DELLO STATO CORRENTE
             # ====================================================
 
-            action_index, possible_actions, unknown_state = get_action(
+            if task == 1:
+                front_cell_visited = env.is_front_cell_visited(
+                    robot_row,
+                    robot_column,
+                    robot_orientation
+                )
+
+            state = env.build_state(distance, robot_orientation, observed_ped_orientation, robot_visibility, ped_visibility, awareness, front_cell_visited)
+
+            # ====================================================
+            # 3. SELEZIONE DELL'AZIONE GREEDY
+            # ====================================================
+
+            action_index = get_action_test(
                 state,
                 robot_row,
                 robot_column,
                 robot_orientation
             )
+
+            print("Azione scelta:", action_index)
+            print("Posizione iniziale:", robot_row, robot_column)
+            print("Orientamento iniziale:", robot_orientation)
+
+            # ====================================================
+            # 5. OTTENIMENTO AWARENESS DEL PEDONE
+            # ====================================================
 
             if action_index is not None:
                 action_name = env.actions[action_index]
@@ -518,9 +529,16 @@ def test():
                 episode_action_counts[action_name] += 1
                 total_action_counts[action_name] += 1
 
-            if action_index is not None:
+                ped_visibility_aware = env.get_pedestrian_visibility(
+                    robot_row,
+                    robot_column,
+                    ped_row,
+                    ped_column,
+                    ped_orientation
+                )
+
                 awareness = env.get_awareness(
-                    ped_visibility,
+                    ped_visibility_aware,
                     robot_visibility,
                     action_index,
                     awareness
@@ -532,18 +550,6 @@ def test():
                     ped_column_visibile = ped_column
 
                     cov.update_coverage_matrix(ped_row_visibile, ped_column_visibile, -1)
-
-            if unknown_state:
-                log_info(
-                    f"EP={episode + 1} STEP={steps} | "
-                    f"STATO NON PRESENTE NELLA Q-TABLE | "
-                    f"state={tuple(state)!r} | "
-                    f"azione selezionata casualmente tra quelle legali"
-                )
-
-                print(
-                    "Stato sconosciuto: selezionata un'azione legale casuale."
-                )
 
             if action_index is None:
                 termination_reason = "no_legal_actions"
@@ -562,7 +568,7 @@ def test():
                 total_communication_counts[communication] += 1
 
             # ====================================================
-            # DIAGNOSTICA DEI VALORI Q
+            # 6. DIAGNOSTICA DEI VALORI Q
             # ====================================================
 
             state_q_values = q_values.get(tuple(state))
@@ -588,7 +594,7 @@ def test():
                 }
 
             # ====================================================
-            # 3. ESECUZIONE DEL MOVIMENTO DEL ROBOT
+            # 7. ESECUZIONE DEL MOVIMENTO DEL ROBOT
             # ====================================================
 
             old_row = robot_row
@@ -607,17 +613,20 @@ def test():
                 action_index
             )
 
+            print("Posizione finale:", candidate_row, candidate_column)
+            print("Orientamento finale:", candidate_orientation)
+            print("Robot avanzato:", candidate_moved)
+
             robot_moved = candidate_moved
 
             collision = (
-                action_index in (0, 1, 2)
+                action_index == 0
                 and candidate_moved
-                and (candidate_row, candidate_column)
-                == (ped_row, ped_column)
+                and (candidate_row, candidate_column) == (ped_row, ped_column)
             )
 
             # ====================================================
-            # 4. GESTIONE DELLA TRANSIZIONE
+            # 8. GESTIONE DELLA TRANSIZIONE
             # ====================================================
 
             done = False
@@ -653,15 +662,15 @@ def test():
                     robot_orientation
                 )
 
-                ped_visibility = env.get_pedestrian_visibility(
-                    robot_row,
-                    robot_column,
-                    ped_row,
-                    ped_column,
-                    ped_orientation
-                )
-
                 if robot_visibility:
+
+                    ped_visibility = env.get_pedestrian_visibility(
+                        robot_row,
+                        robot_column,
+                        ped_row,
+                        ped_column,
+                        ped_orientation
+                    )
 
                     new_distance = env.calculate_distance(
                         robot_row,
@@ -684,18 +693,22 @@ def test():
                     previous_distance,
                     new_distance,
                     action_index,
+                    previous_action,
                     previous_robot_visibility,
                     robot_visibility,
                     robot_orientation,
                     moved
                 )
 
+            # Aggiorna l'azione precedente SOLO dopo aver calcolato la reward.
+            previous_action = action_index
+
             # Conta separatamente i tentativi di avanzamento non riusciti.
             if action_index == 0 and not moved:
                 no_move_count += 1
 
             # ====================================================
-            # 6. AGGIORNAMENTO DELLO STATO DEL ROBOT
+            # 9. AGGIORNAMENTO DELLO STATO DEL ROBOT
             # ====================================================
 
             if task == 1:
@@ -705,15 +718,8 @@ def test():
                     1
                 )
 
-                if robot_visibility:
-                    cov.update_coverage_matrix(
-                        ped_row,
-                        ped_column,
-                        -1
-                    )
-
             # ====================================================
-            # 6.1 VISUALIZZA IL MOVIMENTO DEL ROBOT
+            # 10. VISUALIZZA IL MOVIMENTO DEL ROBOT
             # Il pedone mantiene ancora la posizione precedente.
             # ====================================================
 
@@ -726,13 +732,16 @@ def test():
                 robot_orientation
             )
 
-            ped_visibility_before_move = env.get_pedestrian_visibility(
-                robot_row,
-                robot_column,
-                ped_row,
-                ped_column,
-                ped_orientation
-            )
+            ped_visibility_before_move = None
+
+            if robot_visibility_after_move:
+                ped_visibility_before_move = env.get_pedestrian_visibility(
+                    robot_row,
+                    robot_column,
+                    ped_row,
+                    ped_column,
+                    ped_orientation
+                )
 
             current_draw_state(
                 robot_row,
@@ -767,7 +776,7 @@ def test():
             )
 
             # ====================================================
-            # 7.1 VISUALIZZA IL MOVIMENTO DEL PEDONE
+            # 11. VISUALIZZA IL MOVIMENTO DEL PEDONE
             # Il robot rimane fermo nella posizione raggiunta.
             # ====================================================
 
@@ -780,13 +789,16 @@ def test():
                 robot_orientation
             )
 
-            ped_visibility_after_move = env.get_pedestrian_visibility(
-                robot_row,
-                robot_column,
-                ped_row,
-                ped_column,
-                ped_orientation
-            )
+            ped_visibility_after_move = None
+
+            if robot_visibility_after_ped_move:
+                ped_visibility_after_move = env.get_pedestrian_visibility(
+                    robot_row,
+                    robot_column,
+                    ped_row,
+                    ped_column,
+                    ped_orientation
+                )
 
             current_draw_state(
                 robot_row,
@@ -822,16 +834,14 @@ def test():
                     )
 
             # ====================================================
-            # 8. VERIFICA DEL COMPLETAMENTO DEL TASK
+            # 12. VERIFICA DEL COMPLETAMENTO DEL TASK
             # ====================================================
 
             if task == 1:
                 done = cov.is_coverage_completed()
 
-                if done and not coverage_was_completed:
-                    reward += 10.0
-
                 if done:
+                    reward += 10.0
                     termination_reason = "coverage_completed"
 
                 # Diagnostica della copertura.
@@ -865,19 +875,19 @@ def test():
                 termination_reason = "task_terminated"
 
             # ====================================================
-            # 9. AGGIORNAMENTO DELLE STATISTICHE DELL'EPISODIO
+            # 13. AGGIORNAMENTO DELLE STATISTICHE DELL'EPISODIO
             # ====================================================
 
             episode_reward += reward
 
             # ====================================================
-            # 11. LOG DELLA TRANSIZIONE
+            # 14. LOG DELLA TRANSIZIONE
             # ====================================================
 
             step_message = (
                 f"EP={episode + 1} STEP={steps} | "
                 f"state={state!r} | "
-                f"legal_actions={possible_actions} | "
+                # f"legal_actions={possible_actions} | "
                 f"action_index={action_index} | "
                 f"azione={env.actions[action_index]} | "
                 f"q_diagnostic={q_diagnostic} | "
@@ -994,6 +1004,7 @@ def test():
     total_no_move_steps = sum(episode_no_move_counts)
     total_unknown_decisions = sum(episode_unknown_counts)
     total_steps = sum(episode_steps)
+
     # ========================================================
     # UTILIZZO DELLA Q-TABLE
     # ========================================================

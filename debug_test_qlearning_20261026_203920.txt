@@ -1,0 +1,15 @@
+2026-10-26 20:39:23 | INFO | ========================================================================
+2026-10-26 20:39:23 | INFO | INIZIO TEST Q-LEARNING
+2026-10-26 20:39:23 | INFO | Checkpoint=/home/luigi/exchange/ros2_ws/src/tiago_control/tiago_control/RL classico/q_table.pkl
+2026-10-26 20:39:23 | INFO | Task=1; griglia=5x4
+2026-10-26 20:39:23 | INFO | Episodi=100; max_steps=500
+2026-10-26 20:39:23 | INFO | Seed=42; animazione=True
+2026-10-26 20:39:23 | INFO | Stati Q-table=33038
+2026-10-26 20:39:23 | INFO | Posizioni iniziali robot=(4,2), pedone=(0,2)
+2026-10-26 20:39:23 | INFO | DEBUG_EVERY_STEP=True
+2026-10-26 20:39:23 | INFO | ------------------------------------------------------------------------
+2026-10-26 20:39:23 | INFO | EPISODIO 1 START
+2026-10-26 20:39:24 | INFO | EP=1 STEP=1 | COVERAGE_CHECK | covered=1/20 | remaining=18 | done=False
+2026-10-26 20:39:24 | INFO | EP=1 STEP=1 | state=(4.0, 'UP', 'DOWN', True, True, 0.0, False, False, 0.1) | action_index=1 | azione=turn_left | q_diagnostic={'q_scelta': 6.4803, 'tutti_q_zero': False, 'stato_sconosciuto': False} | robot_before=(4,2,UP) | robot_after=(4,2,LEFT) | ped_after=(0,1,LEFT) | visibility_before=(robot:True,ped:True) | visibility_after_robot_move=(robot:False,distance_before=4.0 | distance_after_robot_move=inf | robot_moved=False | ped_moved=True | collision=False | reward=0.000 | reward_step=0.000 | reward_total=0.000 | done=False
+2026-10-26 20:39:25 | INFO | EP=1 STEP=2 | COVERAGE_CHECK | covered=2/20 | remaining=17 | done=False
+2026-10-26 20:39:25 | INFO | EP=1 STEP=2 | state=(inf, 'LEFT', None, False, True, 0.0, False, False, 0.1) | action_index=0 | azione=forward | q_diagnostic={'q_scelta': 6.1048, 'tutti_q_zero': False, 'stato_sconosciuto': False} | robot_before=(4,2,LEFT) | robot_after=(4,1,LEFT) | ped_after=(1,1,DOWN) | visibility_before=(robot:False,ped:True) | visibility_after_robot_move=(robot:False,distance_before=inf | distance_after_robot_move=inf | robot_moved=True | ped_moved=True | collision=False | reward=2.000 | reward_step=2.000 | reward_total=2.000 | done=False
