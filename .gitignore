@@ -20,3 +20,4 @@ Thumbs.db
 
 # Log
 *.log
+debug_qlearning.txt

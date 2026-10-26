@@ -18,8 +18,8 @@ import coverage as cov
 TEST_EPISODES = 100
 MAX_STEPS = 500
 
-SHOW_ANIMATION = False
-DRAW_PAUSE = 0.001
+SHOW_ANIMATION = True
+DRAW_PAUSE = 1.0
 RANDOM_SEED = 42
 
 # Se True, scrive nel TXT anche tutti i dettagli di ogni step.
@@ -273,15 +273,14 @@ def current_draw_state(
     communication = communication_styles.get(action)
 
     if communication is not None:
-        if robot_visibility:
-            ax1.plot(
-                [robot_column, ped_column],
-                [robot_row, ped_row],
-                color=communication["color"],
-                linestyle=communication["linestyle"],
-                linewidth=2.5,
-                zorder=2
-            )
+        ax1.plot(
+            [robot_column, ped_column],
+            [robot_row, ped_row],
+            color=communication["color"],
+            linestyle=communication["linestyle"],
+            linewidth=2.5,
+            zorder=2
+        )
 
         ax1.text(
             0.02,
@@ -325,6 +324,12 @@ def get_action(state, robot_row, robot_column, robot_orientation):
         robot_row,
         robot_column,
         robot_orientation
+    )
+
+    communication_actions = [3, 4, 5]
+
+    legal_actions = sorted(
+        set(legal_actions + communication_actions)
     )
 
     if not legal_actions:
@@ -372,6 +377,12 @@ def test():
         5: "projection"
     }
 
+    # Conteggio di tutte le azioni, non soltanto quelle comunicative.
+    total_action_counts = {
+        action_name: 0
+        for action_name in env.actions
+    }
+
     total_communication_counts = {
         name: 0 for name in communication_names.values()
     }
@@ -396,11 +407,15 @@ def test():
     log_info(f"DEBUG_EVERY_STEP={DEBUG_EVERY_STEP}")
 
     for episode in range(TEST_EPISODES):
+
+        episode_action_counts = {
+            action_name: 0
+            for action_name in env.actions
+        }
+
         episode_communication_counts = {
             name: 0 for name in communication_names.values()
         }
-        if task == 2:
-            env.reset_passing_side()
 
         print(f"\n========== EPISODIO {episode + 1}/{TEST_EPISODES} ==========")
         log_info("-" * 72)
@@ -408,6 +423,8 @@ def test():
 
         robot_row, robot_column = start_row, start_column
         ped_row, ped_column = start_ped_row, start_ped_column
+        old_robot_row = robot_row
+        old_robot_column = robot_column
         robot_orientation = "UP"
         ped_orientation = "DOWN"
         awareness = 0.0
@@ -432,6 +449,9 @@ def test():
             cov.update_coverage_matrix(robot_row, robot_column, 1)
 
         while not done and steps < MAX_STEPS:
+            coverage_was_completed = (
+                cov.is_coverage_completed() if task == 1 else False
+            )
             steps += 1
 
             # ====================================================
@@ -468,6 +488,7 @@ def test():
                 observed_ped_orientation = None
 
             previous_robot_visibility = robot_visibility
+            previous_ped_visibility = ped_visibility
             previous_distance = distance
 
             # 2. Costruzione dello stato: stessi argomenti del training.
@@ -490,6 +511,12 @@ def test():
                 robot_column,
                 robot_orientation
             )
+
+            if action_index is not None:
+                action_name = env.actions[action_index]
+
+                episode_action_counts[action_name] += 1
+                total_action_counts[action_name] += 1
 
             if action_index is not None:
                 awareness = env.get_awareness(
@@ -526,6 +553,13 @@ def test():
                     "NESSUNA AZIONE LEGALE"
                 )
                 break
+
+            # Conteggio delle azioni di comunicazione selezionate.
+            if action_index in communication_names:
+                communication = communication_names[action_index]
+
+                episode_communication_counts[communication] += 1
+                total_communication_counts[communication] += 1
 
             # ====================================================
             # DIAGNOSTICA DEI VALORI Q
@@ -573,6 +607,8 @@ def test():
                 action_index
             )
 
+            robot_moved = candidate_moved
+
             collision = (
                 action_index in (0, 1, 2)
                 and candidate_moved
@@ -597,6 +633,7 @@ def test():
                 robot_column = old_column
                 robot_orientation = old_orientation
 
+                robot_moved = False
                 moved = False
                 reward = -10.0
 
@@ -625,6 +662,7 @@ def test():
                 )
 
                 if robot_visibility:
+
                     new_distance = env.calculate_distance(
                         robot_row,
                         robot_column,
@@ -641,6 +679,8 @@ def test():
                     old_column,
                     robot_row,
                     robot_column,
+                    ped_row,
+                    ped_column,
                     previous_distance,
                     new_distance,
                     action_index,
@@ -650,7 +690,8 @@ def test():
                     moved
                 )
 
-            if not moved:
+            # Conta separatamente i tentativi di avanzamento non riusciti.
+            if action_index == 0 and not moved:
                 no_move_count += 1
 
             # ====================================================
@@ -670,10 +711,6 @@ def test():
                         ped_column,
                         -1
                     )
-
-            old_robot_row = robot_row
-            old_robot_column = robot_column
-            old_robot_orientation = robot_orientation
 
             # ====================================================
             # 6.1 VISUALIZZA IL MOVIMENTO DEL ROBOT
@@ -711,17 +748,22 @@ def test():
                 action_index
             )
 
-            ped_row, ped_column, ped_orientation, moved, old_robot_row, old_robot_column = (
-                env.update_pedestrian_position(
-                    ped_row,
-                    ped_column,
-                    old_robot_row,
-                    old_robot_column,
-                    robot_row,
-                    robot_column,
-                    ped_orientation,
-                    awareness
-                )
+            (
+                ped_row,
+                ped_column,
+                ped_orientation,
+                ped_moved,
+                old_robot_row,
+                old_robot_column
+            ) = env.update_pedestrian_position(
+                ped_row,
+                ped_column,
+                old_robot_row,
+                old_robot_column,
+                robot_row,
+                robot_column,
+                ped_orientation,
+                awareness
             )
 
             # ====================================================
@@ -760,7 +802,10 @@ def test():
                 action_index
             )
 
+            # Aggiorna la matrice di copertura anche con
+            # la nuova posizione del pedone.
             if task == 1:
+
                 next_robot_visibility = env.get_robot_visibility(
                     robot_row,
                     robot_column,
@@ -775,13 +820,19 @@ def test():
                         ped_column,
                         -1
                     )
+
             # ====================================================
             # 8. VERIFICA DEL COMPLETAMENTO DEL TASK
             # ====================================================
 
             if task == 1:
-                # Verifica il completamento della copertura.
                 done = cov.is_coverage_completed()
+
+                if done and not coverage_was_completed:
+                    reward += 10.0
+
+                if done:
+                    termination_reason = "coverage_completed"
 
                 # Diagnostica della copertura.
                 total_cells = cov.coverage_matrix.size
@@ -837,11 +888,13 @@ def test():
                 f"ped_after=({ped_row},{ped_column},"
                 f"{ped_orientation}) | "
                 f"visibility_before=(robot:{previous_robot_visibility},"
-                f"ped:{ped_visibility}) | "
+                f"ped:{previous_ped_visibility}) | "
                 f"visibility_after_robot_move=(robot:{robot_visibility},"
                 f"distance_before={distance!r} | "
                 f"distance_after_robot_move={new_distance!r} | "
-                f"moved={moved} | collision={collision} | "
+                f"robot_moved={robot_moved} | "
+                f"ped_moved={ped_moved} | "
+                f"collision={collision} | "
                 f"reward={reward:.3f} | "
                 f"reward_step={reward:.3f} | "
                 f"reward_total={episode_reward:.3f} | "
@@ -997,6 +1050,19 @@ def test():
     for communication, count in total_communication_counts.items():
         percentage = 100 * count / total_communications if total_communications else 0.0
         print(f"  {communication}: {count} ({percentage:.2f}%)")
+
+    print("\nDistribuzione complessiva delle azioni:")
+
+    total_actions = sum(total_action_counts.values())
+
+    for action_name, count in total_action_counts.items():
+        percentage = (
+            100.0 * count / total_actions
+            if total_actions > 0
+            else 0.0
+        )
+
+        print(f"  {action_name}: {count} ({percentage:.2f}%)")
 
     print("\nReward per tipo di comunicazione:")
 
