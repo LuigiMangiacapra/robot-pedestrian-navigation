@@ -1,6 +1,5 @@
 import numpy as np
 
-
 rows = 5
 columns = 4
 
@@ -49,3 +48,22 @@ def percentage_coverage():
     total_cells = rows * columns
 
     return visited_cells / total_cells
+
+
+def BFS(root):
+    queue = []
+    queue.append(root)
+
+    while queue:
+        n = len(queue)
+        for _ in range(n):
+            node = queue.pop(0)
+            print(node.val)
+
+            if node.left:
+                queue.append(node.left)
+
+            if node.right:
+                queue.append(node.right)
+
+

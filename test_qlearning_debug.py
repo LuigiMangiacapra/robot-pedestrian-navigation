@@ -16,10 +16,10 @@ import coverage as cov
 # ============================================================
 
 TEST_EPISODES = 100
-MAX_STEPS = 500
+MAX_STEPS = 400
 
-SHOW_ANIMATION = False
-DRAW_PAUSE = 0.5
+SHOW_ANIMATION = True
+DRAW_PAUSE = 1.5
 RANDOM_SEED = 42
 
 # Se True, scrive nel TXT anche tutti i dettagli di ogni step.
@@ -419,6 +419,8 @@ def test():
         robot_orientation = "UP"
         ped_orientation = "DOWN"
         awareness = 0.0
+        remembered_robot_row = None
+        remembered_robot_column = None
 
         # Nessuna azione precedente all'inizio dell'episodio.
         previous_action = None
@@ -443,9 +445,7 @@ def test():
             cov.update_coverage_matrix(robot_row, robot_column, 1)
 
         while not done and steps < MAX_STEPS:
-            coverage_was_completed = (
-                cov.is_coverage_completed() if task == 1 else False
-            )
+
             steps += 1
 
             old_robot_row = robot_row
@@ -463,8 +463,12 @@ def test():
                 robot_orientation
             )
 
-            if robot_visibility:
+            # Valore predefinito a ogni step: mai riutilizzare quello precedente.
+            ped_visibility = False
+            observed_ped_orientation = None
+            distance = float("inf")
 
+            if robot_visibility:
                 ped_visibility = env.get_pedestrian_visibility(
                     robot_row,
                     robot_column,
@@ -480,10 +484,8 @@ def test():
                     ped_column,
                     robot_orientation
                 )
+
                 observed_ped_orientation = ped_orientation
-            else:
-                distance = float("inf")
-                observed_ped_orientation = None
 
             previous_robot_visibility = robot_visibility
             previous_ped_visibility = ped_visibility
@@ -502,7 +504,7 @@ def test():
                     robot_orientation
                 )
 
-            state = env.build_state(distance, robot_orientation, observed_ped_orientation, robot_visibility, ped_visibility, awareness, front_cell_visited)
+            state = env.build_state(distance, robot_orientation, observed_ped_orientation, robot_visibility, ped_visibility, awareness, front_cell_visited, robot_row, robot_column)
 
             # ====================================================
             # 3. SELEZIONE DELL'AZIONE GREEDY
@@ -528,21 +530,6 @@ def test():
 
                 episode_action_counts[action_name] += 1
                 total_action_counts[action_name] += 1
-
-                ped_visibility_aware = env.get_pedestrian_visibility(
-                    robot_row,
-                    robot_column,
-                    ped_row,
-                    ped_column,
-                    ped_orientation
-                )
-
-                awareness = env.get_awareness(
-                    ped_visibility_aware,
-                    robot_visibility,
-                    action_index,
-                    awareness
-                )
 
             if task == 1:
                 if robot_visibility:
@@ -574,7 +561,7 @@ def test():
             state_q_values = q_values.get(tuple(state))
 
             if state_q_values is None:
-                # Stato sconosciuto: l'azione è stata scelta casualmente.
+                # Stato sconosciuto: viene usato il fallback deterministico.
                 q_diagnostic = {
                     "q_scelta": None,
                     "q_stesso_movimento": None,
@@ -633,25 +620,31 @@ def test():
             reward = 0.0
             new_distance = distance
 
+            moved = candidate_moved
+
             if collision:
-                # Stessa penalità prevista dal training.
                 collision_count += 1
                 shield_count += 1
 
-                robot_row = old_row
-                robot_column = old_column
-                robot_orientation = old_orientation
+                (
+                    robot_row,
+                    robot_column,
+                    robot_orientation,
+                    reward,
+                    done
+                ) = env.use_shield(
+                    old_robot_row,
+                    old_robot_column,
+                    old_orientation
+                )
 
-                robot_moved = False
                 moved = False
-                reward = -10.0
+                robot_moved = False
 
             else:
-                # Applica la transizione candidata.
                 robot_row = candidate_row
                 robot_column = candidate_column
                 robot_orientation = candidate_orientation
-                moved = candidate_moved
 
                 # Calcola le nuove osservazioni.
                 robot_visibility = env.get_robot_visibility(
@@ -662,8 +655,10 @@ def test():
                     robot_orientation
                 )
 
-                if robot_visibility:
+                ped_visibility = False
+                new_distance = float("inf")
 
+                if robot_visibility:
                     ped_visibility = env.get_pedestrian_visibility(
                         robot_row,
                         robot_column,
@@ -679,8 +674,22 @@ def test():
                         ped_column,
                         robot_orientation
                     )
-                else:
-                    new_distance = float("inf")
+
+                ped_visibility_aware = env.get_pedestrian_visibility(
+                    robot_row,
+                    robot_column,
+                    ped_row,
+                    ped_column,
+                    ped_orientation
+                )
+
+                old_awareness = awareness
+                awareness = env.get_awareness(
+                    ped_visibility_aware,
+                    robot_visibility,
+                    action_index,
+                    awareness
+                )
 
                 # Usa la funzione di ricompensa del training.
                 reward, done = env.get_reward(
@@ -697,8 +706,14 @@ def test():
                     previous_robot_visibility,
                     robot_visibility,
                     robot_orientation,
-                    moved
+                    moved,
+                    ped_visibility,
+                    old_awareness,
+                    awareness
                 )
+
+            if action_index in communication_names:
+                communication_reward_total += reward
 
             # Aggiorna l'azione precedente SOLO dopo aver calcolato la reward.
             previous_action = action_index
@@ -762,13 +777,13 @@ def test():
                 ped_column,
                 ped_orientation,
                 ped_moved,
-                old_robot_row,
-                old_robot_column
+                remembered_robot_row,
+                remembered_robot_column
             ) = env.update_pedestrian_position(
                 ped_row,
                 ped_column,
-                old_robot_row,
-                old_robot_column,
+                remembered_robot_row,
+                remembered_robot_column,
                 robot_row,
                 robot_column,
                 ped_orientation,
@@ -837,14 +852,23 @@ def test():
             # 12. VERIFICA DEL COMPLETAMENTO DEL TASK
             # ====================================================
 
-            if task == 1:
-                done = cov.is_coverage_completed()
+            # Conserva la condizione di terminazione restituita
+            # dalla funzione di reward o dalla gestione dello shield.
+            reward_done = done
 
-                if done:
+            coverage_done = False
+
+            if task == 1:
+                coverage_done = cov.is_coverage_completed()
+
+                if coverage_done:
                     reward += 10.0
                     termination_reason = "coverage_completed"
 
-                # Diagnostica della copertura.
+                # L'episodio termina se lo richiede la reward
+                # oppure se la copertura è stata completata.
+                done = reward_done or coverage_done
+
                 total_cells = cov.coverage_matrix.size
                 covered_cells = int(np.count_nonzero(
                     cov.coverage_matrix == 1
@@ -858,21 +882,21 @@ def test():
                     f"COVERAGE_CHECK | "
                     f"covered={covered_cells}/{total_cells} | "
                     f"remaining={remaining_cells} | "
+                    f"coverage_done={coverage_done} | "
+                    f"reward_done={reward_done} | "
                     f"done={done}"
                 )
 
-                if done:
-                    success = True
-                    if task == 1:
-                        termination_reason = "coverage_completed"
-                    else:
-                        termination_reason = "task_terminated"
-                else:
-                    success = False
-                    termination_reason = "max_steps"
+                # Se il task termina senza completare la copertura,
+                # non classificare l'episodio come un successo.
+                if reward_done and not coverage_done:
+                    termination_reason = "task_terminated"
 
-            elif task == 2 and done:
-                termination_reason = "task_terminated"
+            elif task == 2:
+                done = reward_done
+
+                if done:
+                    termination_reason = "task_terminated"
 
             # ====================================================
             # 13. AGGIORNAMENTO DELLE STATISTICHE DELL'EPISODIO
@@ -931,15 +955,12 @@ def test():
         #     termination_reason = "interrupted"
 
         episode_unknown = unknown_state_decisions - unknown_count_start
+
         if task == 1:
-            success = (
-                done
-                and termination_reason == "coverage_completed"
-            )
+            success = termination_reason == "coverage_completed"
         else:
             success = (
-                done
-                and termination_reason == "task_terminated"
+                done and termination_reason == "task_terminated"
             )
 
         episode_rewards.append(episode_reward)
